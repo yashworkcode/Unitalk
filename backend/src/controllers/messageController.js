@@ -1,6 +1,6 @@
 import { Chat } from '../models/Chat.js'
 import { Message } from '../models/Message.js'
-import { translateText } from '../services/translationService.js'
+import { translateForRecipient } from '../services/translationService.js'
 
 export async function history(req, res, next) {
   try {
@@ -25,7 +25,7 @@ export async function history(req, res, next) {
             attachment: doc.attachment || undefined,
           }
         }
-        const translated = doc.messageType === 'text' || !doc.attachment ? await translateText(doc.text, targetLanguage) : doc.text
+        const translated = doc.messageType === 'text' || !doc.attachment ? await translateForRecipient(doc.text, targetLanguage, req.user.chatLanguage) : doc.text
         return {
           id: doc._id.toString(),
           from: 'them',

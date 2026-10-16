@@ -2,7 +2,7 @@ import { Chat } from '../models/Chat.js'
 import { Message } from '../models/Message.js'
 import { User } from '../models/User.js'
 import { verifyToken } from '../utils/token.js'
-import { translateText } from '../services/translationService.js'
+import { translateForRecipient } from '../services/translationService.js'
 
 // Tracks which chat each connected user currently has open, so we know
 // whether to bump their unread counter when a new message arrives.
@@ -145,7 +145,8 @@ async function handleSendMessage(io, userId, payload) {
   })
 
   // Translate into the RECIPIENT's preferred language for this conversation.
-  const translatedForRecipient = await translateText(text, recipient.language)
+  const recipientUser = await User.findById(recipient.user).select('chatLanguage')
+  const translatedForRecipient = await translateForRecipient(text, recipient.language, recipientUser?.chatLanguage)
   const translatedFlag = translatedForRecipient !== text
 
   chat.lastMessage = { text, time: message.createdAt }

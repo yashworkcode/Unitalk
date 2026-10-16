@@ -137,43 +137,78 @@ async function translateWithLibreTranslate(text, targetCode) {
   return { translated: data?.translatedText ?? text, detectedCode: data?.detectedLanguage?.language || null }
 }
 
-/**
- * Detects whatever language `text` is written in and translates it into
- * `targetLanguage` (a name like "Spanish", matching the frontend's language
- * picker) - regardless of what the sender's language was. If the sender is
- * already writing in the recipient's language, the text is returned
- * untouched instead of being needlessly (and often incorrectly) re-translated.
- * Never throws - a translation hiccup should never block message delivery.
- */
-export async function translateText(text, targetLanguage) {
-  if (!text || !text.trim() || !targetLanguage) return text
+async function runProvider(provider, text, targetCode, targetLanguage) {
+  if (provider === 'google-cloud') return translateWithGoogleCloud(text, targetCode)
+  if (provider === 'google-free') return translateWithGoogleFree(text, targetCode)
+  if (provider === 'libretranslate') return translateWithLibreTranslate(text, targetCode)
+  return translateOffline(text, targetLanguage)
+}
+
+/** Core translation: auto-detects the sender's language and translates into
+ * `targetLanguage`. Returns { text, detectedCode }. Provider chain:
+ * configured provider -> google-free (no key) -> offline dictionary. Never throws. */
+async function translateDetailed(text, targetLanguage) {
   const targetCode = LANGUAGE_CODES[targetLanguage]
-  if (!targetCode) return text // unknown language name - don't guess
+  if (!targetCode) return { text, detectedCode: null }
 
   const key = cacheKey(text, targetLanguage)
   if (cache.has(key)) return cache.get(key)
 
-  const provider = process.env.TRANSLATION_PROVIDER || 'google-cloud'
-  try {
-    let result
-    if (provider === 'google-cloud') result = await translateWithGoogleCloud(text, targetCode)
-    else if (provider === 'google-free') result = await translateWithGoogleFree(text, targetCode)
-    else if (provider === 'libretranslate') result = await translateWithLibreTranslate(text, targetCode)
-    else result = translateOffline(text, targetLanguage)
+  const configured = process.env.TRANSLATION_PROVIDER || 'google-cloud'
+  const chain = [configured]
+  if (configured !== 'none' && configured !== 'google-free') chain.push('google-free')
 
-    let translated = result.translated
-    // Already the recipient's language (per the detector) - don't re-translate it.
-    if (result.detectedCode && result.detectedCode === targetCode) translated = text
-    if (!translated || !translated.trim()) translated = text
-
-    rememberInCache(key, translated)
-    return translated
-  } catch (error) {
-    console.warn(`[translation] provider "${provider}" failed (${error.message}), using offline fallback`)
-    const fallback = translateOffline(text, targetLanguage).translated
-    rememberInCache(key, fallback)
-    return fallback
+  let result = null
+  for (const provider of chain) {
+    try {
+      result = await runProvider(provider, text, targetCode, targetLanguage)
+      if (result?.translated?.trim()) break
+    } catch (error) {
+      console.warn(`[translation] provider "${provider}" failed (${error.message})`)
+    }
   }
+  if (!result?.translated?.trim()) result = translateOffline(text, targetLanguage)
+
+  let translated = result.translated
+  const detectedCode = result.detectedCode || null
+  // Already in the target language - leave untouched.
+  if (detectedCode && detectedCode === targetCode) translated = text
+  if (!translated || !translated.trim()) translated = text
+
+  const out = { text: translated, detectedCode }
+  rememberInCache(key, out)
+  return out
+}
+
+/** Translate `text` into `targetLanguage` (name like "Spanish"). */
+export async function translateText(text, targetLanguage) {
+  if (!text || !text.trim() || !targetLanguage) return text
+  return (await translateDetailed(text, targetLanguage)).text
+}
+
+/**
+ * Translate a message for its RECIPIENT, whatever language the sender wrote in.
+ * Target = the recipient's chat language. If the message is already in that
+ * language (nothing to translate), fall back to the recipient's own profile
+ * language so the reply is never left untranslated, e.g. Spanish -> English.
+ */
+export async function translateForRecipient(text, chatLanguage, profileLanguage) {
+  if (!text || !text.trim()) return text
+  const primary = chatLanguage || profileLanguage || 'English'
+  const first = await translateDetailed(text, primary)
+  if (first.text !== text) return first.text
+
+  const altCodeIsSame = profileLanguage && profileLanguage !== primary
+  if (altCodeIsSame) {
+    const second = await translateDetailed(text, profileLanguage)
+    if (second.text !== text) return second.text
+  }
+  // Last resort: if the text is in the recipient's language already, try English.
+  if (primary !== 'English' && profileLanguage !== 'English') {
+    const third = await translateDetailed(text, 'English')
+    if (third.text !== text) return third.text
+  }
+  return text
 }
 
 /** Best-effort detection only (no translation) - handy for diagnostics/logging. */
