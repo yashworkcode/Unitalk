@@ -10,8 +10,15 @@ import { notFound, errorHandler } from './middleware/errorHandler.js'
 export function createApp() {
   const app = express()
 
-  const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(origin => origin.trim())
-  app.use(cors({ origin: allowedOrigins, credentials: true }))
+  // Allow requests from any origin (reflects the caller's origin, so it also works with credentials)
+  const corsOptions = {
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  }
+  app.use(cors(corsOptions))
+  app.options('*', cors(corsOptions)) // answer preflight requests
   app.use(express.json({ limit: '15mb' })) // generous enough for base64 image/voice attachments
   if (process.env.NODE_ENV !== 'test') app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 

@@ -11,9 +11,8 @@ async function main() {
   const app = createApp()
   const server = http.createServer(app)
 
-  const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(origin => origin.trim())
   const io = new Server(server, {
-    cors: { origin: allowedOrigins, credentials: true },
+    cors: { origin: true, credentials: true }, // allow all origins
     transports: ['websocket', 'polling'],
   })
   initChatSocket(io)
