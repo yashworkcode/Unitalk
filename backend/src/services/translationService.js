@@ -1,5 +1,5 @@
 
-Translationservice · JS
+
 import axios from 'axios'
 import { franc } from 'franc-min'
  
