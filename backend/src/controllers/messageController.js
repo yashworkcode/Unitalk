@@ -10,6 +10,7 @@ export async function history(req, res, next) {
 
     const own = chat.participantFor(req.user._id)
     const targetLanguage = own?.language || 'English'
+    const senderLanguage = chat.otherParticipantFor(req.user._id)?.language
 
     const docs = await Message.find({ chat: chat._id }).sort({ createdAt: 1 }).limit(500)
 
@@ -25,7 +26,7 @@ export async function history(req, res, next) {
             attachment: doc.attachment || undefined,
           }
         }
-        const translated = doc.messageType === 'text' || !doc.attachment ? await translateForRecipient(doc.text, targetLanguage, req.user.chatLanguage) : doc.text
+        const translated = doc.messageType === 'text' || !doc.attachment ? await translateForRecipient(doc.text, targetLanguage, req.user.chatLanguage, senderLanguage) : doc.text
         return {
           id: doc._id.toString(),
           from: 'them',

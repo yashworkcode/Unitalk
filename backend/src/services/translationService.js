@@ -127,6 +127,18 @@ async function translateWithGoogleCloud(text, targetCode) {
   return { translated: result?.translatedText ?? text, detectedCode: result?.detectedSourceLanguage || null }
 }
 
+async function translateWithMyMemory(text, targetCode, sourceCode) {
+  // Free keyless fallback. Cannot auto-detect, so it needs the sender's language.
+  if (!sourceCode || sourceCode === targetCode) throw new Error('no usable source language')
+  const { data } = await axios.get('https://api.mymemory.translated.net/get', {
+    params: { q: text, langpair: `${sourceCode}|${targetCode}` },
+    timeout: 8000,
+  })
+  const translated = data?.responseData?.translatedText
+  if (!translated || data?.responseStatus !== 200) throw new Error('MyMemory returned no translation')
+  return { translated, detectedCode: null }
+}
+
 async function translateWithLibreTranslate(text, targetCode) {
   const url = process.env.LIBRETRANSLATE_URL || 'https://libretranslate.com/translate'
   const { data } = await axios.post(
@@ -137,7 +149,8 @@ async function translateWithLibreTranslate(text, targetCode) {
   return { translated: data?.translatedText ?? text, detectedCode: data?.detectedLanguage?.language || null }
 }
 
-async function runProvider(provider, text, targetCode, targetLanguage) {
+async function runProvider(provider, text, targetCode, targetLanguage, sourceCode) {
+  if (provider === 'mymemory') return translateWithMyMemory(text, targetCode, sourceCode)
   if (provider === 'google-cloud') return translateWithGoogleCloud(text, targetCode)
   if (provider === 'google-free') return translateWithGoogleFree(text, targetCode)
   if (provider === 'libretranslate') return translateWithLibreTranslate(text, targetCode)
@@ -147,27 +160,30 @@ async function runProvider(provider, text, targetCode, targetLanguage) {
 /** Core translation: auto-detects the sender's language and translates into
  * `targetLanguage`. Returns { text, detectedCode }. Provider chain:
  * configured provider -> google-free (no key) -> offline dictionary. Never throws. */
-async function translateDetailed(text, targetLanguage) {
+async function translateDetailed(text, targetLanguage, sourceLanguage) {
   const targetCode = LANGUAGE_CODES[targetLanguage]
   if (!targetCode) return { text, detectedCode: null }
 
-  const key = cacheKey(text, targetLanguage)
+  const sourceCode = LANGUAGE_CODES[sourceLanguage] || null
+  const key = cacheKey(text, `${targetLanguage}::${sourceLanguage || ''}`)
   if (cache.has(key)) return cache.get(key)
 
   const configured = process.env.TRANSLATION_PROVIDER || 'google-cloud'
   const chain = [configured]
   if (configured !== 'none' && configured !== 'google-free') chain.push('google-free')
+  if (configured !== 'none') chain.push('mymemory')
 
   let result = null
   for (const provider of chain) {
     try {
-      result = await runProvider(provider, text, targetCode, targetLanguage)
+      result = await runProvider(provider, text, targetCode, targetLanguage, sourceCode)
       if (result?.translated?.trim()) break
     } catch (error) {
       console.warn(`[translation] provider "${provider}" failed (${error.message})`)
     }
   }
-  if (!result?.translated?.trim()) result = translateOffline(text, targetLanguage)
+  let live = !!result?.translated?.trim()
+  if (!live) result = translateOffline(text, targetLanguage)
 
   let translated = result.translated
   const detectedCode = result.detectedCode || null
@@ -176,7 +192,7 @@ async function translateDetailed(text, targetLanguage) {
   if (!translated || !translated.trim()) translated = text
 
   const out = { text: translated, detectedCode }
-  rememberInCache(key, out)
+  if (live) rememberInCache(key, out) // never cache a failed lookup
   return out
 }
 
@@ -192,20 +208,20 @@ export async function translateText(text, targetLanguage) {
  * language (nothing to translate), fall back to the recipient's own profile
  * language so the reply is never left untranslated, e.g. Spanish -> English.
  */
-export async function translateForRecipient(text, chatLanguage, profileLanguage) {
+export async function translateForRecipient(text, chatLanguage, profileLanguage, senderLanguage) {
   if (!text || !text.trim()) return text
   const primary = chatLanguage || profileLanguage || 'English'
-  const first = await translateDetailed(text, primary)
+  const first = await translateDetailed(text, primary, senderLanguage)
   if (first.text !== text) return first.text
 
   const altCodeIsSame = profileLanguage && profileLanguage !== primary
   if (altCodeIsSame) {
-    const second = await translateDetailed(text, profileLanguage)
+    const second = await translateDetailed(text, profileLanguage, senderLanguage)
     if (second.text !== text) return second.text
   }
   // Last resort: if the text is in the recipient's language already, try English.
   if (primary !== 'English' && profileLanguage !== 'English') {
-    const third = await translateDetailed(text, 'English')
+    const third = await translateDetailed(text, 'English', senderLanguage)
     if (third.text !== text) return third.text
   }
   return text
@@ -222,3 +238,19 @@ export function isSupportedLanguage(language) {
 }
 
 export { LANGUAGE_CODES }
+
+/** Diagnostics: tries every provider separately so you can see which one works on the server. */
+export async function diagnoseProviders(text, targetLanguage, sourceLanguage) {
+  const targetCode = LANGUAGE_CODES[targetLanguage]
+  const sourceCode = LANGUAGE_CODES[sourceLanguage] || null
+  const out = {}
+  for (const provider of ['google-cloud', 'google-free', 'mymemory', 'libretranslate']) {
+    try {
+      const r = await runProvider(provider, text, targetCode, targetLanguage, sourceCode)
+      out[provider] = { ok: true, translated: r.translated, detected: r.detectedCode }
+    } catch (error) {
+      out[provider] = { ok: false, error: error.message }
+    }
+  }
+  return out
+}

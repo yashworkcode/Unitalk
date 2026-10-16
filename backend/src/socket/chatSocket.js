@@ -146,7 +146,7 @@ async function handleSendMessage(io, userId, payload) {
 
   // Translate into the RECIPIENT's preferred language for this conversation.
   const recipientUser = await User.findById(recipient.user).select('chatLanguage')
-  const translatedForRecipient = await translateForRecipient(text, recipient.language, recipientUser?.chatLanguage)
+  const translatedForRecipient = await translateForRecipient(text, recipient.language, recipientUser?.chatLanguage, sender.language)
   const translatedFlag = translatedForRecipient !== text
 
   chat.lastMessage = { text, time: message.createdAt }

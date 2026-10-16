@@ -5,6 +5,7 @@ import authRoutes from './routes/auth.js'
 import userRoutes from './routes/users.js'
 import chatRoutes from './routes/chats.js'
 import messageRoutes from './routes/messages.js'
+import { diagnoseProviders } from './services/translationService.js'
 import { notFound, errorHandler } from './middleware/errorHandler.js'
 
 export function createApp() {
@@ -23,6 +24,17 @@ export function createApp() {
   if (process.env.NODE_ENV !== 'test') app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 
   app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }))
+
+  // Open in a browser to see which translation provider works on the server, e.g.
+  // /api/health/translate?text=buenos%20dias&from=Spanish&to=French
+  app.get('/api/health/translate', async (req, res) => {
+    const { text = 'good morning', from = 'English', to = 'Spanish' } = req.query
+    res.json({
+      configuredProvider: process.env.TRANSLATION_PROVIDER || 'google-cloud',
+      hasGoogleKey: !!process.env.GOOGLE_TRANSLATE_API_KEY,
+      results: await diagnoseProviders(String(text), String(to), String(from)),
+    })
+  })
 
   app.use('/api/auth', authRoutes)
   app.use('/api/users', userRoutes)
