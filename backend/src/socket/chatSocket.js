@@ -144,14 +144,30 @@ async function handleSendMessage(io, userId, payload) {
     attachment: attachment?.url ? { kind: attachment.kind, name: attachment.name, url: attachment.url } : undefined,
   })
 
-  // Translate into the RECIPIENT's preferred language for this conversation.
+  const recipientId = recipient.user.toString()
+  const baseTime = message.createdAt.toISOString()
+  const basePayload = {
+    id: message._id.toString(),
+    chatId: chat._id.toString(),
+    senderId: userId,
+    messageType,
+    attachment: message.attachment,
+    createdAt: baseTime,
+    me: { text, original: text, translated: false },
+  }
+  const previewPayload = { chatId: chat._id.toString(), preview: text, time: baseTime }
+
+  // 1) Show the message to the SENDER immediately - they never need a translation, so don't
+  //    make them wait for the translation service.
+  io.to(userRoom(userId)).emit('message:receive', { ...basePayload, them: { text, original: text, translated: false } })
+  io.to(userRoom(userId)).emit('chat:preview', previewPayload)
+
+  // 2) Translate for the RECIPIENT (their language for this chat), in parallel with bookkeeping.
   const recipientUser = await User.findById(recipient.user).select('chatLanguage')
   const translatedForRecipient = await translateForRecipient(text, recipient.language, recipientUser?.chatLanguage, sender.language)
   const translatedFlag = translatedForRecipient !== text
 
   chat.lastMessage = { text, time: message.createdAt }
-
-  const recipientId = recipient.user.toString()
   if (isActive(recipientId, chatId)) {
     recipient.unread = 0
   } else {
@@ -159,23 +175,6 @@ async function handleSendMessage(io, userId, payload) {
   }
   await chat.save()
 
-  const receivePayload = {
-    id: message._id.toString(),
-    chatId: chat._id.toString(),
-    senderId: userId,
-    messageType,
-    attachment: message.attachment,
-    createdAt: message.createdAt.toISOString(),
-    me: { text, original: text, translated: false },
-    them: { text: translatedForRecipient, original: text, translated: translatedFlag },
-  }
-
-  // Broadcast to each participant's personal room (covers every open tab/device for that
-  // user) rather than the per-chat room, so delivery never depends on whether chat:join
-  // happened to fire first - avoids duplicate deliveries too.
-  const previewPayload = { chatId: chat._id.toString(), preview: text, time: message.createdAt.toISOString() }
-  io.to(userRoom(userId)).emit('message:receive', receivePayload)
-  io.to(userRoom(userId)).emit('chat:preview', previewPayload)
-  io.to(userRoom(recipientId)).emit('message:receive', receivePayload)
+  io.to(userRoom(recipientId)).emit('message:receive', { ...basePayload, them: { text: translatedForRecipient, original: text, translated: translatedFlag } })
   io.to(userRoom(recipientId)).emit('chat:preview', previewPayload)
 }

@@ -97,7 +97,7 @@ async function translateWithGoogleFree(text, targetCode) {
   // anything production-grade.
   const { data } = await axios.get('https://translate.googleapis.com/translate_a/single', {
     params: { client: 'gtx', sl: 'auto', tl: targetCode, dt: 't', q: text },
-    timeout: 6000,
+    timeout: 4000,
   })
   // Response shape: [[["translated chunk","original chunk",null,null,...], ...], null, "es"]
   // The 3rd top-level element is the auto-detected source language code.
@@ -121,7 +121,7 @@ async function translateWithGoogleCloud(text, targetCode) {
   const { data } = await axios.post(
     `https://translation.googleapis.com/language/translate2?key=${apiKey}`,
     { q: text, target: targetCode, format: 'text' }, // source omitted on purpose - lets Google auto-detect it
-    { timeout: 8000, headers: { 'Content-Type': 'application/json' } }
+    { timeout: 4000, headers: { 'Content-Type': 'application/json' } }
   )
   const result = data?.data?.translations?.[0]
   return { translated: result?.translatedText ?? text, detectedCode: result?.detectedSourceLanguage || null }
@@ -145,7 +145,7 @@ async function myMemoryCall(chunk, langpair) {
   const params = { q: chunk, langpair }
   // An email raises the free quota from ~5k to ~50k characters/day (no signup, no card).
   if (process.env.MYMEMORY_EMAIL) params.de = process.env.MYMEMORY_EMAIL
-  const { data } = await axios.get('https://api.mymemory.translated.net/get', { params, timeout: 8000 })
+  const { data } = await axios.get('https://api.mymemory.translated.net/get', { params, timeout: 4000 })
   const translated = data?.responseData?.translatedText
   const status = Number(data?.responseStatus)
   if (!translated || status !== 200) throw new Error(`MyMemory status ${data?.responseStatus}: ${data?.responseDetails || 'no translation'}`)
@@ -176,7 +176,7 @@ let edgeToken = { value: null, expires: 0 }
 async function getEdgeToken() {
   if (edgeToken.value && Date.now() < edgeToken.expires) return edgeToken.value
   const { data } = await axios.get('https://edge.microsoft.com/translate/auth', {
-    timeout: 7000,
+    timeout: 4000,
     responseType: 'text',
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36 Edg/124' },
   })
@@ -195,7 +195,7 @@ async function translateWithEdge(text, targetCode) {
     {
       params: { 'api-version': '3.0', to: targetCode },
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      timeout: 8000,
+      timeout: 4000,
     }
   )
   const first = data?.[0]
@@ -211,7 +211,7 @@ async function translateWithLingva(text, targetCode) {
   let lastError
   for (const host of hosts) {
     try {
-      const { data } = await axios.get(`${host}/api/v1/auto/${targetCode}/${encodeURIComponent(text)}`, { timeout: 7000 })
+      const { data } = await axios.get(`${host}/api/v1/auto/${targetCode}/${encodeURIComponent(text)}`, { timeout: 4000 })
       if (data?.translation) return { translated: data.translation, detectedCode: data?.info?.detectedSource || null }
     } catch (error) {
       lastError = error
@@ -225,7 +225,7 @@ async function translateWithLibreTranslate(text, targetCode) {
   const { data } = await axios.post(
     url,
     { q: text, source: 'auto', target: targetCode, format: 'text', api_key: process.env.LIBRETRANSLATE_API_KEY || undefined },
-    { timeout: 8000, headers: { 'Content-Type': 'application/json' } }
+    { timeout: 4000, headers: { 'Content-Type': 'application/json' } }
   )
   return { translated: data?.translatedText ?? text, detectedCode: data?.detectedLanguage?.language || null }
 }
@@ -243,9 +243,30 @@ async function runProvider(provider, text, targetCode, targetLanguage, sourceCod
 /** Core translation: auto-detects the sender's language and translates into
  * `targetLanguage`. Returns { text, detectedCode }. Provider chain:
  * configured provider -> google-free (no key) -> offline dictionary. Never throws. */
+// Circuit breaker: a provider that just failed (blocked / rate-limited / down) is skipped for a
+// while, so every message doesn't wait for the same dead services again.
+const providerDownUntil = new Map()
+function isDown(provider) { return (providerDownUntil.get(provider) || 0) > Date.now() }
+function markDown(provider, error) {
+  const status = error?.response?.status
+  const ms = [404, 429, 503, 400, 401, 403].includes(status) ? 5 * 60 * 1000 : 60 * 1000
+  providerDownUntil.set(provider, Date.now() + ms)
+}
+
+// Identical translations already in progress share one request.
+const inFlight = new Map()
+
 async function translateDetailed(text, targetLanguage, sourceLanguage) {
+  const key = `${targetLanguage}::${sourceLanguage || ''}::${text}`
+  if (inFlight.has(key)) return inFlight.get(key)
+  const promise = translateDetailedInner(text, targetLanguage, sourceLanguage).finally(() => inFlight.delete(key))
+  inFlight.set(key, promise)
+  return promise
+}
+
+async function translateDetailedInner(text, targetLanguage, sourceLanguage) {
   const targetCode = LANGUAGE_CODES[targetLanguage]
-  if (!targetCode) return { text, detectedCode: null }
+  if (!targetCode) return { text, detectedCode: null, live: false }
 
   const sourceCode = LANGUAGE_CODES[sourceLanguage] || null
   const key = cacheKey(text, `${targetLanguage}::${sourceLanguage || ''}`)
@@ -258,11 +279,13 @@ async function translateDetailed(text, targetLanguage, sourceLanguage) {
 
   let result = null
   for (const provider of uniqueChain) {
+    if (isDown(provider)) continue
     try {
       result = await runProvider(provider, text, targetCode, targetLanguage, sourceCode)
       if (result?.translated?.trim()) break
     } catch (error) {
-      console.warn(`[translation] provider "${provider}" failed (${error.message})`)
+      markDown(provider, error)
+      console.warn(`[translation] provider "${provider}" failed (${error.message}) - skipping it for a while`)
     }
   }
   let live = !!result?.translated?.trim()
@@ -274,7 +297,7 @@ async function translateDetailed(text, targetLanguage, sourceLanguage) {
   if (detectedCode && detectedCode === targetCode) translated = text
   if (!translated || !translated.trim()) translated = text
 
-  const out = { text: translated, detectedCode }
+  const out = { text: translated, detectedCode, live }
   if (live) rememberInCache(key, out) // never cache a failed lookup
   return out
 }
@@ -296,6 +319,7 @@ export async function translateForRecipient(text, chatLanguage, profileLanguage,
   const primary = chatLanguage || profileLanguage || 'English'
   const first = await translateDetailed(text, primary, senderLanguage)
   if (first.text !== text) return first.text
+  if (!first.live) return text // no translator reachable - don't retry the whole chain
 
   const altCodeIsSame = profileLanguage && profileLanguage !== primary
   if (altCodeIsSame) {

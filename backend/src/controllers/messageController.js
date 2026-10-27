@@ -2,6 +2,18 @@ import { Chat } from '../models/Chat.js'
 import { Message } from '../models/Message.js'
 import { translateForRecipient } from '../services/translationService.js'
 
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++
+      results[index] = await fn(items[index])
+    }
+  }))
+  return results
+}
+
 export async function history(req, res, next) {
   try {
     const { chatId } = req.params
@@ -14,8 +26,10 @@ export async function history(req, res, next) {
 
     const docs = await Message.find({ chat: chat._id }).sort({ createdAt: 1 }).limit(500)
 
-    const messages = await Promise.all(
-      docs.map(async doc => {
+    const messages = await mapLimit(
+      docs,
+      6,
+      async doc => {
         const isMine = doc.sender.toString() === req.user._id.toString()
         if (isMine) {
           return {
@@ -36,7 +50,7 @@ export async function history(req, res, next) {
           time: doc.createdAt.toISOString(),
           attachment: doc.attachment || undefined,
         }
-      })
+      }
     )
 
     // Opening the thread counts as reading it.
