@@ -23,7 +23,7 @@ export function createApp() {
   app.use(express.json({ limit: '15mb' })) // generous enough for base64 image/voice attachments
   if (process.env.NODE_ENV !== 'test') app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 
-  app.get('/api/health', (req, res) => res.json({ status: 'ok', translationVersion: 'v3-multi-provider', time: new Date().toISOString() }))
+  app.get('/api/health', (req, res) => res.json({ status: 'ok', translationVersion: 'v4-edge', time: new Date().toISOString() }))
 
   // Open in a browser to see which translation provider works on the server, e.g.
   // /api/health/translate?text=buenos%20dias&from=Spanish&to=French
@@ -46,3 +46,5 @@ export function createApp() {
 
   return app
 }
+ 
+
