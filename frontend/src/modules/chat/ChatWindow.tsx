@@ -3,6 +3,7 @@ import type { Attachment, Chat, Message } from '../data/mockData'
 import { Avatar } from '../shared/Avatar'
 import { Icon } from '../shared/Icon'
 import type { ChatWindowStrings } from '../i18n/translations'
+import { translateInBrowser } from './clientTranslate'
 
 type ChatWindowProps = {
   chat: Chat | null
@@ -27,6 +28,21 @@ export function ChatWindow({ chat, messages, onProfile, onSend, onLanguageChange
   const [languageOpen, setLanguageOpen] = useState(false)
   const [recording, setRecording] = useState(false)
   const [notice, setNotice] = useState('')
+  // Fallback: messages the server could not translate are translated here in the browser.
+  const [browserTranslations, setBrowserTranslations] = useState<Record<string, string>>({})
+  const requested = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!chat) return
+    for (const message of messages) {
+      if (message.from !== 'them' || message.translated || message.attachment || !message.original) continue
+      const key = `${message.id}:${chat.language}`
+      if (requested.current.has(key)) continue
+      requested.current.add(key)
+      translateInBrowser(message.original, chat.language).then(result => {
+        if (result) setBrowserTranslations(current => ({ ...current, [key]: result }))
+      })
+    }
+  }, [messages, chat])
   const imageInput = useRef<HTMLInputElement>(null)
   const videoInput = useRef<HTMLInputElement>(null)
   const recorder = useRef<MediaRecorder | null>(null)
@@ -85,8 +101,10 @@ export function ChatWindow({ chat, messages, onProfile, onSend, onLanguageChange
           // language before it ever reached the browser (see
           // backend/socket/chatSocket.js and backend/routes/messages.js) -
           // no client-side re-translation needed.
-          const displayText = message.text
-          return <div className={`message-row ${message.from}`} key={message.id}>{message.from === 'them' && <Avatar name={chat.name} src={chat.avatar} size="sm" online={chat.online}/>}<div className="message-stack"><div className={`bubble ${message.from} ${message.attachment ? 'attachment-bubble' : ''}`}>{message.attachment?.kind === 'image' && <img className="chat-image" src={message.attachment.url} alt={message.attachment.name}/>} {message.attachment?.kind === 'video' && <video className="chat-video" controls src={message.attachment.url}/>} {message.attachment?.kind === 'audio' && <div className="voice-note"><Icon name="mic" size={17}/><audio controls src={message.attachment.url}/><span>Voice message</span></div>}<p>{displayText}{autoTranslate && message.translated ? ' (translated)' : ''}</p>{showOriginal && message.original && message.original !== displayText ? <p className="message-original">{message.original}</p> : null}<time>{message.time} {message.from === 'me' && <Icon name="checkDouble" size={14}/>}</time></div></div></div>})}</>}
+          const browserKey = chat ? `${message.id}:${chat.language}` : ''
+          const browserText = browserTranslations[browserKey]
+          const displayText = browserText ?? message.text
+          return <div className={`message-row ${message.from}`} key={message.id}>{message.from === 'them' && <Avatar name={chat.name} src={chat.avatar} size="sm" online={chat.online}/>}<div className="message-stack"><div className={`bubble ${message.from} ${message.attachment ? 'attachment-bubble' : ''}`}>{message.attachment?.kind === 'image' && <img className="chat-image" src={message.attachment.url} alt={message.attachment.name}/>} {message.attachment?.kind === 'video' && <video className="chat-video" controls src={message.attachment.url}/>} {message.attachment?.kind === 'audio' && <div className="voice-note"><Icon name="mic" size={17}/><audio controls src={message.attachment.url}/><span>Voice message</span></div>}<p>{displayText}{autoTranslate && (message.translated || browserText) ? ' (translated)' : ''}</p>{showOriginal && message.original && message.original !== displayText ? <p className="message-original">{message.original}</p> : null}<time>{message.time} {message.from === 'me' && <Icon name="checkDouble" size={14}/>}</time></div></div></div>})}</>}
       </section>
       {notice && <div className="composer-notice"><span>{notice}</span><button onClick={() => setNotice('')}><Icon name="x" size={14}/></button></div>}
       <footer className="composer-wrap"><div className={`composer ${recording ? 'recording' : ''}`}><div className="attach-wrap"><button onClick={() => setAttachOpen(!attachOpen)} title="Attach image or video"><Icon name="paperclip"/></button>{attachOpen && <div className="attach-menu"><button onClick={() => imageInput.current?.click()}><Icon name="image" size={17}/><span><b>Image</b><small>JPG, PNG, WEBP</small></span></button><button onClick={() => videoInput.current?.click()}><Icon name="video" size={17}/><span><b>Video</b><small>MP4, WEBM, MOV</small></span></button></div>}</div><input value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} placeholder={recording ? 'Recording voice message…' : strings.composerPlaceholder.replace('{name}', chat.name.split(' ')[0])} disabled={recording}/>{draft ? <button className="send-button" onClick={send} aria-label="Send message"><Icon name="send" size={19}/></button> : <button className={`voice-button ${recording ? 'active' : ''}`} onClick={toggleRecording} aria-label={recording ? 'Stop recording' : 'Record voice message'}>{recording ? <Icon name="stop" size={16}/> : <Icon name="mic" size={19}/>}</button>}<input ref={imageInput} onChange={event => attachFile(event, 'image')} type="file" accept="image/*" hidden/><input ref={videoInput} onChange={event => attachFile(event, 'video')} type="file" accept="video/*" hidden/></div><p><Icon name="sparkle" size={13}/> {strings.storedNotice} <button onClick={() => setLanguageOpen(true)}>Translation language: {chat.language}</button></p></footer>
